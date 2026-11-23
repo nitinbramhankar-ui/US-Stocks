@@ -12,7 +12,7 @@
  <div class="row"><b>Portfolio controls</b><span class="tiny">Market data and financials are requested through your Cloudflare Worker.</span></div>
  <div class="actions"><button class="btn secondary" id="uploadBtn">1. Upload latest portfolio</button><button class="btn secondary" id="addBtn">2. Add stock</button><button class="btn" id="refreshBtn">3. Refresh data & valuations</button></div>
  <input id="file" type="file" accept=".xlsx,.xls,.csv" hidden>
- <div id="uploadBox" class="toolbox"><b>Upload portfolio</b><div class="hint">Excel or CSV with columns named Ticker/Symbol and Quantity/Shares. Imported holdings replace the current portfolio.</div><div class="toolrow"><input id="fileName" readonly placeholder="Choose a file"><button class="btn secondary" id="chooseFile">Choose file</button><button class="btn" id="importFile">Import</button></div><div id="uploadMsg" class="tiny"></div></div>
+ <div id="uploadBox" class="toolbox"><b>Upload portfolio</b><div class="hint">Vested Excel export (.xlsx): reads the Holdings worksheet and imports Name, Ticker, Total Shares Held, Current Price (USD), and Current Value (USD). CSV exports with equivalent columns are also supported. Imported holdings replace the current portfolio.</div><div class="toolrow"><input id="fileName" readonly placeholder="Choose a file"><button class="btn secondary" id="chooseFile">Choose file</button><button class="btn" id="importFile">Import</button></div><div id="uploadMsg" class="tiny"></div></div>
  <div id="addBox" class="toolbox"><b>Add a stock to watchlist</b><div class="hint">Search companies through Finnhub via Cloudflare, then add them to your watchlist. Quotes and supported public-company financials are retrieved through your Worker.</div><div class="toolrow"><input id="stockSearch" placeholder="Search company or ticker, e.g. NVIDIA"><button class="btn" id="searchStocks">Search</button></div><div id="searchResults"></div><div class="toolrow"><input id="newTicker" placeholder="Ticker, e.g. AMD"><input id="newName" placeholder="Company name"><button class="btn secondary" id="addStock">Add manually</button></div></div>
  <div id="assumptionsBox" class="toolbox"><b>Valuation assumptions</b><div class="hint">Quarterly revenue is fetched automatically where supported. Set the remaining company-specific assumptions; they are saved in this browser.</div><div class="toolrow"><select id="assumptionTicker"></select></div><div class="formgrid" id="assumptionFields"></div><div class="toolrow"><button class="btn" id="saveAssumptions">Save assumptions & calculate</button><span id="assumptionMsg" class="tiny"></span></div></div>
  <div id="message" class="error"></div>
@@ -84,7 +84,83 @@ async function refresh(){
 const assumptionFields=[['cm','Contribution margin (%)'],['multiple','Base EV multiple (x)'],['netcash','Net cash / (debt), USD bn'],['shares','Diluted shares, billions']];function refreshSelector(){$('assumptionTicker').innerHTML=holdings.map(h=>`<option value="${h.t}">${h.t} — ${h.n}</option>`).join('');drawAssumptions()}function drawAssumptions(){const h=holdings.find(x=>x.t===$('assumptionTicker').value)||holdings[0];$('assumptionFields').innerHTML=assumptionFields.map(([k,label])=>`<label>${label}<input id="a_${k}" type="number" step="any" value="${h.model?.[k]??''}" placeholder="Enter value"></label>`).join('');}
 $('saveAssumptions').onclick=()=>{const h=holdings.find(x=>x.t===$('assumptionTicker').value);h.model=Object.fromEntries(assumptionFields.map(([k])=>[k,$('a_'+k).value.trim()]));calculate(h);persist();render();$('assumptionMsg').textContent=h.yo>0?'Saved and recalculated.':'Saved. Five quarterly revenues and valid assumptions are required.'};$('assumptionTicker').onchange=drawAssumptions;
 $('uploadBtn').onclick=()=>showBox('uploadBox');$('addBtn').onclick=()=>showBox('addBox');$('refreshBtn').onclick=refresh;$('chooseFile').onclick=()=>$('file').click();$('file').onchange=e=>$('fileName').value=e.target.files[0]?.name||'';
-$('importFile').onclick=async()=>{const f=$('file').files[0];if(!f){$('uploadMsg').textContent='Choose a file first.';return}try{let rows;if(f.name.toLowerCase().endsWith('.csv'))rows=(await f.text()).trim().split(/\r?\n/).map(x=>x.split(',').map(y=>y.trim().replace(/^"|"$/g,'')));else{const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true})}const head=rows.shift().map(x=>String(x||'').toLowerCase().trim()),ti=head.findIndex(x=>['ticker','symbol','stock symbol'].includes(x)),qi=head.findIndex(x=>['quantity','shares','qty'].includes(x));if(ti<0||qi<0)throw Error('Required columns: Ticker/Symbol and Quantity/Shares.');const parsed=rows.map(r=>({t:String(r[ti]||'').trim().toUpperCase(),q:Number(r[qi])})).filter(x=>x.t&&x.q>0);if(!parsed.length)throw Error('No valid holdings found.');const old=new Map(holdings.map(h=>[h.t,h]));holdings.splice(0,holdings.length,...parsed.map(x=>old.get(x.t)?{...old.get(x.t),q:x.q}:{t:x.t,n:x.t,q:x.q,p:0,eo:0,ec:0,yo:0,yc:0}));persist();refreshSelector();render();$('uploadMsg').textContent='Imported '+parsed.length+' holdings.';refresh()}catch(e){$('uploadMsg').textContent=e.message}};
+$('importFile').onclick=async()=>{
+ const f=$('file').files[0];
+ if(!f){$('uploadMsg').textContent='Choose a file first.';return}
+ try{
+  const norm=x=>String(x??'').toLowerCase().replace(/[\s_()\-\/]+/g,'').replace(/[^a-z0-9]/g,'');
+  let parsedRows=[],sourceLabel='';
+  const parseRows=arr=>{
+   if(!Array.isArray(arr)||!arr.length)return null;
+   const headerIndex=arr.findIndex(row=>{
+    const h=(row||[]).map(norm);
+    return h.includes('ticker')&&(h.includes('totalsharesheld')||h.includes('quantity')||h.includes('shares')||h.includes('qty'));
+   });
+   if(headerIndex<0)return null;
+   const header=(arr[headerIndex]||[]).map(norm);
+   const find=(...names)=>header.findIndex(x=>names.includes(x));
+   const ti=find('ticker','symbol','stocksymbol');
+   const qi=find('totalsharesheld','quantity','shares','qty');
+   const ni=find('name','company','companyname');
+   const pi=find('currentpriceusd','currentprice','priceusd','price');
+   const vi=find('currentvalueusd','currentvalue','marketvalueusd','marketvalue');
+   if(ti<0||qi<0)return null;
+   const out=arr.slice(headerIndex+1).map(row=>{
+    const t=String(row?.[ti]??'').trim().toUpperCase();
+    const q=Number(String(row?.[qi]??'').replace(/,/g,''));
+    const p=pi>=0?Number(String(row?.[pi]??'').replace(/[$,]/g,'')):NaN;
+    const value=vi>=0?Number(String(row?.[vi]??'').replace(/[$,]/g,'')):NaN;
+    const n=ni>=0?String(row?.[ni]??'').trim():t;
+    return {t,n:n||t,q,p,value};
+   }).filter(x=>x.t&&Number.isFinite(x.q)&&x.q>0);
+   return out.length?out:null;
+  };
+  if(f.name.toLowerCase().endsWith('.csv')){
+   const wb=XLSX.read(await f.text(),{type:'string'});
+   parsedRows=parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''}));
+   sourceLabel='CSV';
+  }else{
+   const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:false});
+   const preferred=wb.SheetNames.find(n=>norm(n)==='holdings');
+   const candidates=preferred?[preferred,...wb.SheetNames.filter(n=>n!==preferred)]:wb.SheetNames;
+   for(const sheetName of candidates){
+    const arr=XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1,raw:true,defval:''});
+    const result=parseRows(arr);
+    if(result){parsedRows=result;sourceLabel=sheetName;break;}
+   }
+  }
+  if(!parsedRows?.length)throw Error('No worksheet with Ticker and Total Shares Held columns was found.');
+  const dedup=new Map();
+  for(const x of parsedRows){
+   const previous=dedup.get(x.t);
+   if(previous){
+    previous.q+=x.q;
+    if(Number.isFinite(x.value))previous.value=(Number.isFinite(previous.value)?previous.value:0)+x.value;
+   }else dedup.set(x.t,{...x});
+  }
+  const imported=[...dedup.values()];
+  const old=new Map(holdings.map(h=>[h.t,h]));
+  holdings.splice(0,holdings.length,...imported.map(x=>{
+   const previous=old.get(x.t)||{};
+   const importedPrice=Number.isFinite(x.p)&&x.p>0?x.p:(Number.isFinite(x.value)&&x.q>0?x.value/x.q:null);
+   return {
+    ...previous,
+    t:x.t,
+    n:x.n||previous.n||x.t,
+    q:x.q,
+    p:importedPrice??previous.p??0,
+    importedCurrentValue:Number.isFinite(x.value)?x.value:null,
+    valuationStatus:undefined,
+    valuationMessage:''
+   };
+  }));
+  quotes={};
+  persist();refreshSelector();render();
+  $('uploadMsg').textContent='Imported '+imported.length+' holdings from Vested '+sourceLabel+' worksheet. Refreshing live data…';
+  await refresh();
+  $('uploadMsg').textContent='Successfully imported '+imported.length+' holdings from Vested '+sourceLabel+' worksheet.';
+ }catch(e){$('uploadMsg').textContent='Import failed: '+(e?.message||String(e));}
+};
 $('searchStocks').onclick=async()=>{const q=$('stockSearch').value.trim();if(!q)return;$('searchResults').textContent='Searching…';try{const d=await getJSON('/api/search?q='+encodeURIComponent(q));const hits=d.result||[];$('searchResults').innerHTML=hits.slice(0,12).map(x=>`<div class="row" style="padding:8px;border-bottom:1px solid var(--line)"><span><b>${x.symbol}</b> — ${x.description||''}</span><button class="btn secondary" data-ticker="${x.symbol}" data-company="${String(x.description||x.symbol).replace(/"/g,'&quot;')}">Add</button></div>`).join('')||'No matches found.';document.querySelectorAll('[data-ticker]').forEach(b=>b.onclick=()=>addHolding(b.dataset.ticker,b.dataset.company))}catch(e){$('searchResults').textContent=e.message}};
 function addHolding(t,n){t=t.toUpperCase().trim();if(holdings.some(h=>h.t===t)){$('searchResults').textContent=t+' is already in your watchlist.';return}holdings.push({t,n,q:0,p:0,eo:0,ec:0,yo:0,yc:0});persist();refreshSelector();render();refresh()}
 $('addStock').onclick=()=>{const t=$('newTicker').value.trim().toUpperCase(),n=$('newName').value.trim()||t;if(!t)return;addHolding(t,n);$('newTicker').value='';$('newName').value=''};

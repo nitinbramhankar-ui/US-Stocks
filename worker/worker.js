@@ -189,7 +189,7 @@ function addDays(date, days) {
 
 function extractQuarterly(rows) {
   const valid = chooseLatestByPeriod(rows).filter(r =>
-    ["10-Q", "10-K", "20-F", "40-F", "S-1", "S-1/A", "S-1/A-1"].includes(r.form || "")
+    ["10-Q", "10-K", "20-F", "40-F", "8-K", "S-1", "S-1/A", "S-1/A-1"].includes(r.form || "")
   );
 
   const direct = valid.filter(r => {

@@ -105,5 +105,16 @@ jobs:
           if (ageDays < -7 || ageDays > 120) {
             throw new Error(`Latest NVDA revenue period is stale or future-dated (${latest.end}; ${Math.round(ageDays)} days old)`);
           }
-          console.log(`NVDA revenue endpoint: PASS — latest quarter ended ${latest.end}, revenue $${(latest.revenue / 1e9).toFixed(3)}B; 5 quarters returned`);
+          if (latest.end !== "2026-10-25" || Math.abs(latest.revenue - 115844000000) > 1000000) {
+            throw new Error(`NVDA latest quarter does not match the official Q3 FY2027 filing (expected 2026-10-25 and $115.844B): ${JSON.stringify(latest)}`);
+          }
+          console.log(`NVDA revenue endpoint: PASS — latest quarter ended ${latest.end}, revenue ${(latest.revenue / 1e9).toFixed(3)}B; 5 quarters returned`);
+
+          for (const symbol of ["SPCX", "ANT"]) {
+            const valuation = await getJson(`/api/valuation?symbol=${symbol}`);
+            if (valuation.ok !== false || valuation.status !== "capital_structure_review_required" || valuation.valuationSuppressed !== true) {
+              throw new Error(`${symbol} must suppress per-share valuation until capital structure is verified: ${JSON.stringify(valuation).slice(0, 1200)}`);
+            }
+            console.log(`${symbol} capital-structure safety check: PASS`);
+          }
           NODE

@@ -57,7 +57,12 @@ async function fetchValuation(h){
    h.eo=d.optimistic.maxEntryPriceToday;
    h.ec=d.conservative.maxEntryPriceToday;
    h.valuationStatus='automatic';
-  }else{h.valuationStatus=d.status||'unavailable';h.valuationMessage=d.message||'';}
+  }else{
+   h.valuationStatus=d.status||'unavailable';h.valuationMessage=d.message||'';
+   if(d.valuationSuppressed||['SPCX','ANT'].includes(h.t)){
+    h.eo=0;h.ec=0;h.yo=0;h.yc=0;
+   }
+  }
  }catch(e){h.valuationStatus='unavailable';h.valuationMessage=e.message}
 }
 async function refresh(){

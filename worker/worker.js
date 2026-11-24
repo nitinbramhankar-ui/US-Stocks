@@ -523,12 +523,21 @@ function parseNvidiaSupplementalRevenue(html, filingDate = null) {
     // Select the chronologically latest reporting-period date, not the first
     // date in document order (which can be the prior-year comparison).
     const filingYear = filingDate ? Number(String(filingDate).slice(0, 4)) : null;
+    // NVIDIA's exhibit title explicitly states the fiscal period end. Use it
+    // ahead of table dates, which also include comparison periods and may
+    // contain other dates in the same fiscal year.
+    const exhibitTitle = cleanSecText(html).match(
+      /For the Quarter Ended\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},\\s+20\\d{2}/i
+    );
+    const titleDate = exhibitTitle ? new Date(exhibitTitle[0].replace(/^For the Quarter Ended\\s+/i, "") + " UTC") : null;
     const parsedDates = dateMatches
       .map(match => new Date(match[0] + " UTC"))
       .filter(date => Number.isFinite(date.getTime()))
       .filter(date => !filingYear || date.getUTCFullYear() === filingYear)
       .sort((a, b) => b.getTime() - a.getTime());
-    const end = parsedDates[0];
+    const end = titleDate && Number.isFinite(titleDate.getTime())
+      ? titleDate
+      : parsedDates[0];
     if (!end) continue;
 
     const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];

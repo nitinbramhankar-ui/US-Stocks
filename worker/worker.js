@@ -502,7 +502,7 @@ function cleanSecText(html) {
     .trim();
 }
 
-function parseNvidiaSupplementalRevenue(html, filingReportDate = null) {
+function parseNvidiaSupplementalRevenue(html) {
   const tables = html.match(/<table\b[\s\S]*?<\/table>/gi) || [];
 
   for (const table of tables) {
@@ -519,9 +519,7 @@ function parseNvidiaSupplementalRevenue(html, filingReportDate = null) {
 
     if (!dateMatches.length) continue;
 
-    const end = filingReportDate
-      ? new Date(`${filingReportDate}T00:00:00Z`)
-      : new Date(dateMatches[0][0]);
+    const end = new Date(dateMatches[0][0]);
     if (!Number.isFinite(end.getTime())) continue;
 
     const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
@@ -632,7 +630,7 @@ async function fetchNvidiaSupplementalQuarter(env) {
     const exhibitUrl = filingBase + exhibitName;
     const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
     const html = await exhibitRes.text();
-    const parsed = parseNvidiaSupplementalRevenue(html, filing.reportDate);
+    const parsed = parseNvidiaSupplementalRevenue(html);
 
     if (parsed) {
       return {

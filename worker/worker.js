@@ -502,7 +502,7 @@ function cleanSecText(html) {
     .trim();
 }
 
-function parseNvidiaSupplementalRevenue(html) {
+function parseNvidiaSupplementalRevenue(html, filingReportDate = null) {
   const tables = html.match(/<table\b[\s\S]*?<\/table>/gi) || [];
 
   for (const table of tables) {
@@ -519,7 +519,9 @@ function parseNvidiaSupplementalRevenue(html) {
 
     if (!dateMatches.length) continue;
 
-    const end = new Date(dateMatches[0][0]);
+    const end = filingReportDate
+      ? new Date(`${filingReportDate}T00:00:00Z`)
+      : new Date(dateMatches[0][0]);
     if (!Number.isFinite(end.getTime())) continue;
 
     const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
@@ -630,7 +632,7 @@ async function fetchNvidiaSupplementalQuarter(env) {
     const exhibitUrl = filingBase + exhibitName;
     const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
     const html = await exhibitRes.text();
-    const parsed = parseNvidiaSupplementalRevenue(html);
+    const parsed = parseNvidiaSupplementalRevenue(html, filing.reportDate);
 
     if (parsed) {
       return {
@@ -737,6 +739,16 @@ function balanceSheet(facts) {
     180
   );
 
+  // Publicly traded equity securities are reported separately from debt
+  // securities. Include them as a distinct, marked-to-market financial asset
+  // in the equity bridge; do not conflate them with cash equivalents.
+  const marketableEquity = extractInstant(
+    facts,
+    ["MarketableEquitySecuritiesCurrent"],
+    asOf,
+    180
+  );
+
   const shortTermBorrowings = extractInstant(
     facts,
     ["ShortTermBorrowings", "ShortTermDebtCurrent"],
@@ -766,6 +778,7 @@ function balanceSheet(facts) {
 
   const cashValue = cash?.value || 0;
   const investmentValue = investments?.value || 0;
+  const marketableEquityValue = marketableEquity?.value || 0;
 
   const currentDebt =
     (shortTermBorrowings?.value || 0) +
@@ -779,11 +792,13 @@ function balanceSheet(facts) {
     asOf,
     cash: cashValue,
     shortTermInvestments: investmentValue,
+    marketableEquitySecurities: marketableEquityValue,
     debt: debtValue,
-    netCash: cashValue + investmentValue - debtValue,
+    netCash: cashValue + investmentValue + marketableEquityValue - debtValue,
     components: {
       cash,
       investments,
+      marketableEquity,
       shortTermBorrowings,
       currentLongTermDebt,
       noncurrentLongTermDebt,
@@ -893,6 +908,21 @@ function valuationFor(
     };
   }
 
+  // These private issuers have capital structures that the generic XBRL
+  // weighted-average-share proxy cannot represent. Suppress per-share values
+  // until filing-specific award, conversion and share-class treatment exists.
+  if (symbol === "SPCX" || symbol === "ANT") {
+    return {
+      ok: false,
+      symbol,
+      status: "capital_structure_review_required",
+      message: "Revenue data is available, but a defensible per-share valuation requires filing-specific treatment of share classes, convertible securities, options and RSUs. Generic SEC diluted-share data is not an adequate denominator.",
+      revenue: revenueData,
+      latestQuarter: revenueData.quarters[revenueData.quarters.length - 1],
+      valuationSuppressed: true
+    };
+  }
+
   if (company.sotp) {
     return {
       ok: false,
@@ -985,7 +1015,7 @@ function valuationFor(
       contributionMarginDefinition:
         "Revenue less direct cost to serve; excludes discretionary R&D, S&M, G&A and expansion/capex.",
       netCashDefinition:
-        "Cash + liquid short-term investments - interest-bearing debt; operating leases excluded."
+        "Cash + short-term debt securities + separately disclosed marketable equity securities - interest-bearing debt; non-marketable securities and operating leases excluded."
     }
   };
 }

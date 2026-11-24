@@ -121,18 +121,40 @@ function latestUnit(fact) {
 function normalizedFacts(payload) {
   return payload?.facts || payload;
 }
-
 function getFactArray(payload, tags) {
   const facts = normalizedFacts(payload);
+  const candidates = [];
 
   for (const tag of tags) {
-    const f = facts?.["us-gaap"]?.[tag];
-    const a = latestUnit(f);
+    const fact = facts?.["us-gaap"]?.[tag];
+    const rows = latestUnit(fact);
 
-    if (a?.length) return { tag, rows: a };
+    if (!rows?.length) continue;
+
+    const quarters = extractQuarterly(rows);
+
+    if (!quarters.length) continue;
+
+    const latest = quarters[quarters.length - 1];
+
+    candidates.push({
+      tag,
+      rows,
+      latestEnd: latest.end,
+      quarterCount: quarters.length,
+      latestFiled: latest.filed || ""
+    });
   }
 
-  return null;
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) =>
+    b.latestEnd.localeCompare(a.latestEnd) ||
+    b.quarterCount - a.quarterCount ||
+    b.latestFiled.localeCompare(a.latestFiled)
+  );
+
+  return candidates[0];
 }
 
 function daySpan(start, end) {
@@ -454,7 +476,8 @@ function latestFiveRevenue(facts) {
     return {
       tag: null,
       quarters: [],
-      growth: null
+      growth: null,
+      status: "revenue_unavailable"
     };
   }
 
@@ -469,10 +492,26 @@ function latestFiveRevenue(facts) {
     method: r.method
   }));
 
+  const latest = quarters[quarters.length - 1];
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (!latest || daySpan(latest.end, today) > 180) {
+    return {
+      tag: f.tag,
+      quarters: [],
+      growth: null,
+      status: "stale_revenue_data",
+      latestAvailableQuarter: latest?.end || null
+    };
+  }
+
   return {
     tag: f.tag,
     quarters,
-    growth: weightedGrowth(quarters)
+    growth: weightedGrowth(quarters),
+    status: quarters.length === 5
+      ? "ok"
+      : "insufficient_quarters"
   };
 }
 

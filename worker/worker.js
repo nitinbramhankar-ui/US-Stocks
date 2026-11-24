@@ -616,9 +616,9 @@ async function fetchNvidiaSupplementalQuarter(env) {
     if (!exhibitName) {
       const indexRes = await secRequest(filingBase + "index.html", env, "text/html");
       const indexHtml = await indexRes.text();
-      const anchors = [...indexHtml.matchAll(/<a\\b[^>]*href=["']([^"']+\.htm[l]?)["'][^>]*>([\\s\\S]*?)<\\/a>/gi)];
+      const anchors = [...indexHtml.matchAll(/<a\b[^>]*href=["']([^"']+\.htm[l]?)["'][^>]*>([\s\S]*?)<\/a>/gi)];
       const match = anchors.find(a =>
-        /supplemental.*financial|EX-99\\.3/i.test(
+        /supplemental.*financial|EX-99\.3/i.test(
           cleanSecText(a[2]) + " " + a[1]
         )
       );

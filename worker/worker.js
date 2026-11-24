@@ -593,23 +593,41 @@ async function fetchNvidiaSupplementalQuarter(env) {
 
   for (const filing of candidates.slice(0, 6)) {
     const accessionCompact = filing.accession.replace(/-/g, "");
-    const indexUrl =
-      `https://www.sec.gov/Archives/edgar/data/1045810/${accessionCompact}/index.json`;
+    const filingBase =
+      `https://www.sec.gov/Archives/edgar/data/1045810/${accessionCompact}/`;
 
-    const indexRes = await secRequest(indexUrl, env, "application/json");
-    const index = await indexRes.json();
-    const items = index?.directory?.item || [];
+    // Prefer the SEC directory JSON, but fall back to its HTML index.
+    // SEC directory metadata can vary in which exhibit fields are populated.
+    let exhibitName = null;
+    try {
+      const indexRes = await secRequest(filingBase + "index.json", env, "application/json");
+      const index = await indexRes.json();
+      const items = index?.directory?.item || [];
+      const exhibit = items.find(item =>
+        /EX-99\.3/i.test(item.type || "") ||
+        /supplemental.*financial/i.test(item.name || "") ||
+        /supplemental.*financial/i.test(item.description || "")
+      );
+      if (exhibit?.name && /\.htm(l)?$/i.test(exhibit.name)) {
+        exhibitName = exhibit.name;
+      }
+    } catch (_) {}
 
-    const exhibit = items.find(item =>
-      /EX-99\.3/i.test(item.type || "") ||
-      /supplemental.*financial/i.test(item.name || "") ||
-      /supplemental.*financial/i.test(item.description || "")
-    );
+    if (!exhibitName) {
+      const indexRes = await secRequest(filingBase + "index.html", env, "text/html");
+      const indexHtml = await indexRes.text();
+      const anchors = [...indexHtml.matchAll(/<a\\b[^>]*href=["']([^"']+\.htm[l]?)["'][^>]*>([\\s\\S]*?)<\\/a>/gi)];
+      const match = anchors.find(a =>
+        /supplemental.*financial|EX-99\\.3/i.test(
+          cleanSecText(a[2]) + " " + a[1]
+        )
+      );
+      if (match) exhibitName = match[1].split("/").pop();
+    }
 
-    if (!exhibit?.name || !/\.htm(l)?$/i.test(exhibit.name)) continue;
+    if (!exhibitName) continue;
 
-    const exhibitUrl =
-      `https://www.sec.gov/Archives/edgar/data/1045810/${accessionCompact}/${exhibit.name}`;
+    const exhibitUrl = filingBase + exhibitName;
     const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
     const html = await exhibitRes.text();
     const parsed = parseNvidiaSupplementalRevenue(html);
@@ -1100,7 +1118,9 @@ async function handle(request, env) {
           company: company.name,
           revenueTag: revenueData.tag,
           quarters: revenueData.quarters,
-          growth: revenueData.growth
+          growth: revenueData.growth,
+          supplementalSource: revenueData.supplementalSource || null,
+          supplementalError: revenueData.supplementalError || null
         }, 200, origin);
       }
 

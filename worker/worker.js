@@ -527,9 +527,19 @@ function parseNvidiaSupplementalRevenue(html, filingDate = null) {
     // ahead of table dates, which also include comparison periods and may
     // contain other dates in the same fiscal year.
     const exhibitTitle = cleanSecText(html).match(
-      /For the Quarter Ended\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},\\s+20\\d{2}/i
+      /For the Quarter Ended\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{1,2}),\\s+(20\\d{2})/i
     );
-    const titleDate = exhibitTitle ? new Date(exhibitTitle[0].replace(/^For the Quarter Ended\\s+/i, "") + " UTC") : null;
+    const monthNumbers = {
+      january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+      july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+    };
+    const titleDate = exhibitTitle
+      ? new Date(Date.UTC(
+          Number(exhibitTitle[3]),
+          monthNumbers[exhibitTitle[1].toLowerCase()] - 1,
+          Number(exhibitTitle[2])
+        ))
+      : null;
     const parsedDates = dateMatches
       .map(match => new Date(match[0] + " UTC"))
       .filter(date => Number.isFinite(date.getTime()))

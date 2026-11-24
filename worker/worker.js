@@ -483,7 +483,7 @@ async function secRequest(url, env, accept = "*/*") {
   });
 
   if (!res.ok) {
-    throw new Error(\`SEC request returned \${res.status}: \${url}\`);
+    throw new Error(`SEC request returned ${res.status}: ${url}`);
   }
 
   return res;
@@ -594,7 +594,7 @@ async function fetchNvidiaSupplementalQuarter(env) {
   for (const filing of candidates.slice(0, 6)) {
     const accessionCompact = filing.accession.replace(/-/g, "");
     const indexUrl =
-      \`https://www.sec.gov/Archives/edgar/data/1045810/\${accessionCompact}/index.json\`;
+      `https://www.sec.gov/Archives/edgar/data/1045810/${accessionCompact}/index.json`;
 
     const indexRes = await secRequest(indexUrl, env, "application/json");
     const index = await indexRes.json();
@@ -609,7 +609,7 @@ async function fetchNvidiaSupplementalQuarter(env) {
     if (!exhibit?.name || !/\.htm(l)?$/i.test(exhibit.name)) continue;
 
     const exhibitUrl =
-      \`https://www.sec.gov/Archives/edgar/data/1045810/\${accessionCompact}/\${exhibit.name}\`;
+      `https://www.sec.gov/Archives/edgar/data/1045810/${accessionCompact}/${exhibit.name}`;
     const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
     const html = await exhibitRes.text();
     const parsed = parseNvidiaSupplementalRevenue(html);

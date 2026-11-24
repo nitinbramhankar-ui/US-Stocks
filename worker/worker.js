@@ -1156,7 +1156,7 @@ async function handle(request, env) {
 
           try {
             const facts = await fetchSecFacts(company.cik, env);
-            const revenueData = await latestFiveRevenue(facts, symbol, env);
+            const revenueData = await latestFiveRevenue(facts, s, env);
             const bs = balanceSheet(facts);
             const shares = shareCount(facts);
 

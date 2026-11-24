@@ -519,8 +519,15 @@ function parseNvidiaSupplementalRevenue(html) {
 
     if (!dateMatches.length) continue;
 
-    const end = new Date(dateMatches[0][0]);
-    if (!Number.isFinite(end.getTime())) continue;
+    // The supplemental table contains current and prior-year columns.
+    // Select the chronologically latest reporting-period date, not the first
+    // date in document order (which can be the prior-year comparison).
+    const parsedDates = dateMatches
+      .map(match => new Date(match[0] + " UTC"))
+      .filter(date => Number.isFinite(date.getTime()))
+      .sort((a, b) => b.getTime() - a.getTime());
+    const end = parsedDates[0];
+    if (!end) continue;
 
     const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
 

@@ -502,7 +502,7 @@ function cleanSecText(html) {
     .trim();
 }
 
-function parseNvidiaSupplementalRevenue(html) {
+function parseNvidiaSupplementalRevenue(html, filingDate = null) {
   const tables = html.match(/<table\b[\s\S]*?<\/table>/gi) || [];
 
   for (const table of tables) {
@@ -522,9 +522,11 @@ function parseNvidiaSupplementalRevenue(html) {
     // The supplemental table contains current and prior-year columns.
     // Select the chronologically latest reporting-period date, not the first
     // date in document order (which can be the prior-year comparison).
+    const filingYear = filingDate ? Number(String(filingDate).slice(0, 4)) : null;
     const parsedDates = dateMatches
       .map(match => new Date(match[0] + " UTC"))
       .filter(date => Number.isFinite(date.getTime()))
+      .filter(date => !filingYear || date.getUTCFullYear() === filingYear)
       .sort((a, b) => b.getTime() - a.getTime());
     const end = parsedDates[0];
     if (!end) continue;
@@ -637,7 +639,7 @@ async function fetchNvidiaSupplementalQuarter(env) {
     const exhibitUrl = filingBase + exhibitName;
     const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
     const html = await exhibitRes.text();
-    const parsed = parseNvidiaSupplementalRevenue(html);
+    const parsed = parseNvidiaSupplementalRevenue(html, filing.filed);
 
     if (parsed) {
       return {

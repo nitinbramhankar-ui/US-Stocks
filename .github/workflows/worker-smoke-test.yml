@@ -23,8 +23,9 @@ jobs:
           node <<'NODE'
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
           const url = `https://api.github.com/repos/${process.env.GH_REPOSITORY}/commits/${process.env.GH_SHA}/check-runs`;
-          const deadline = Date.now() + 15 * 60 * 1000;
-          while (Date.now() < deadline) {
+          const appearanceDeadline = Date.now() + 90 * 1000;
+          let check = null;
+          while (Date.now() < appearanceDeadline) {
             const response = await fetch(url, {
               headers: {
                 Authorization: `Bearer ${process.env.GH_TOKEN}`,
@@ -34,7 +35,27 @@ jobs:
             });
             if (!response.ok) throw new Error(`GitHub check-runs API returned ${response.status}: ${await response.text()}`);
             const data = await response.json();
-            const check = (data.check_runs || []).find(x => x.name === "Workers Builds: us-stocks");
+            check = (data.check_runs || []).find(x => x.name === "Workers Builds: us-stocks");
+            if (check) break;
+            console.log("No Cloudflare deployment check for this commit yet...");
+            await sleep(15000);
+          }
+          if (!check) {
+            console.log("No Cloudflare deployment was triggered by this commit; testing the currently deployed Worker.");
+            process.exit(0);
+          }
+          const completionDeadline = Date.now() + 15 * 60 * 1000;
+          while (Date.now() < completionDeadline) {
+            const response = await fetch(url, {
+              headers: {
+                Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+              }
+            });
+            if (!response.ok) throw new Error(`GitHub check-runs API returned ${response.status}: ${await response.text()}`);
+            const data = await response.json();
+            check = (data.check_runs || []).find(x => x.name === "Workers Builds: us-stocks");
             if (check?.status === "completed") {
               console.log(`Cloudflare deployment: ${check.conclusion}`);
               if (check.conclusion !== "success") throw new Error("Cloudflare deployment did not succeed");

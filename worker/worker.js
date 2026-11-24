@@ -469,7 +469,165 @@ function weightedGrowth(quarters) {
   };
 }
 
-function latestFiveRevenue(facts) {
+
+async function secRequest(url, env, accept = "*/*") {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": env.SEC_USER_AGENT,
+      "Accept": accept
+    },
+    cf: {
+      cacheTtl: 3600,
+      cacheEverything: true
+    }
+  });
+
+  if (!res.ok) {
+    throw new Error(\`SEC request returned \${res.status}: \${url}\`);
+  }
+
+  return res;
+}
+
+function cleanSecText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#36;|&dollar;/gi, "$")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseNvidiaSupplementalRevenue(html) {
+  const tables = html.match(/<table\b[\s\S]*?<\/table>/gi) || [];
+
+  for (const table of tables) {
+    const tableText = cleanSecText(table);
+
+    if (!/three months ended/i.test(tableText) ||
+        !/\brevenue\b/i.test(tableText)) {
+      continue;
+    }
+
+    const dateMatches = [...tableText.matchAll(
+      /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+20\d{2}\b/gi
+    )];
+
+    if (!dateMatches.length) continue;
+
+    const end = new Date(dateMatches[0][0]);
+    if (!Number.isFinite(end.getTime())) continue;
+
+    const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
+
+    for (const row of rows) {
+      const rowText = cleanSecText(row);
+      if (!/^revenue\b/i.test(rowText) && !/\brevenue\b/i.test(rowText)) {
+        continue;
+      }
+      if (/total\s+revenue/i.test(rowText)) continue;
+
+      const cells = row.match(/<(?:td|th)\b[\s\S]*?<\/(?:td|th)>/gi) || [];
+      if (cells.length < 2) continue;
+
+      const values = cells
+        .slice(1)
+        .map(cell => cleanSecText(cell))
+        .map(value => value.replace(/[$,\s]/g, ""))
+        .filter(value => /^\(?\d+(?:\.\d+)?\)?$/.test(value))
+        .map(value => Number(value.replace(/[()]/g, "")));
+
+      if (!values.length || !Number.isFinite(values[0]) || values[0] <= 0) {
+        continue;
+      }
+
+      return {
+        end: end.toISOString().slice(0, 10),
+        revenue: values[0] * 1e6,
+        revenueMillions: values[0]
+      };
+    }
+  }
+
+  return null;
+}
+
+async function fetchNvidiaSupplementalQuarter(env) {
+  if (!env.SEC_USER_AGENT) {
+    throw new Error("Missing SEC_USER_AGENT secret");
+  }
+
+  const submissionsUrl =
+    "https://data.sec.gov/submissions/CIK0001045810.json";
+  const submissionsRes = await secRequest(
+    submissionsUrl,
+    env,
+    "application/json"
+  );
+  const submissions = await submissionsRes.json();
+  const recent = submissions?.filings?.recent;
+
+  if (!recent?.form || !recent?.accessionNumber || !recent?.items) {
+    throw new Error("SEC submissions response has no recent filing index");
+  }
+
+  const candidates = [];
+
+  for (let i = 0; i < recent.form.length; i++) {
+    const form = recent.form[i];
+    const items = recent.items[i] || "";
+    if (form === "8-K" && /2\.02/.test(items)) {
+      candidates.push({
+        accession: recent.accessionNumber[i],
+        filed: recent.filingDate[i],
+        reportDate: recent.reportDate?.[i] || null
+      });
+    }
+  }
+
+  candidates.sort((a, b) => (b.filed || "").localeCompare(a.filed || ""));
+
+  for (const filing of candidates.slice(0, 6)) {
+    const accessionCompact = filing.accession.replace(/-/g, "");
+    const indexUrl =
+      \`https://www.sec.gov/Archives/edgar/data/1045810/\${accessionCompact}/index.json\`;
+
+    const indexRes = await secRequest(indexUrl, env, "application/json");
+    const index = await indexRes.json();
+    const items = index?.directory?.item || [];
+
+    const exhibit = items.find(item =>
+      /EX-99\.3/i.test(item.type || "") ||
+      /supplemental.*financial/i.test(item.name || "") ||
+      /supplemental.*financial/i.test(item.description || "")
+    );
+
+    if (!exhibit?.name || !/\.htm(l)?$/i.test(exhibit.name)) continue;
+
+    const exhibitUrl =
+      \`https://www.sec.gov/Archives/edgar/data/1045810/\${accessionCompact}/\${exhibit.name}\`;
+    const exhibitRes = await secRequest(exhibitUrl, env, "text/html");
+    const html = await exhibitRes.text();
+    const parsed = parseNvidiaSupplementalRevenue(html);
+
+    if (parsed) {
+      return {
+        ...parsed,
+        filingDate: filing.filed,
+        filingUrl: exhibitUrl,
+        source: "SEC 8-K Exhibit 99.3"
+      };
+    }
+  }
+
+  throw new Error("Could not locate NVIDIA quarterly revenue in recent SEC 8-K exhibits");
+}
+
+async function latestFiveRevenue(facts, symbol, env) {
   const f = getFactArray(facts, REVENUE_TAGS);
 
   if (!f) {
@@ -482,8 +640,7 @@ function latestFiveRevenue(facts) {
   }
 
   const raw = extractQuarterly(f.rows);
-
-  const quarters = raw.map(r => ({
+  let quarters = raw.map(r => ({
     start: r.start,
     end: r.end,
     filingDate: r.filed,
@@ -491,6 +648,42 @@ function latestFiveRevenue(facts) {
     revenueBillions: r.val / 1e9,
     method: r.method
   }));
+
+  let supplementalSource = null;
+  let supplementalError = null;
+
+  // NVIDIA reports its quarterly revenue in furnished 8-K Exhibit 99.3.
+  // That exhibit is not consistently represented in CompanyFacts XBRL.
+  if (symbol === "NVDA") {
+    try {
+      const supplemental = await fetchNvidiaSupplementalQuarter(env);
+      const latestCompanyFactsQuarter = quarters[quarters.length - 1];
+
+      if (!latestCompanyFactsQuarter ||
+          supplemental.end > latestCompanyFactsQuarter.end) {
+        const start = latestCompanyFactsQuarter
+          ? addDays(latestCompanyFactsQuarter.end, 1)
+          : null;
+
+        quarters.push({
+          start,
+          end: supplemental.end,
+          filingDate: supplemental.filingDate,
+          revenue: supplemental.revenue,
+          revenueBillions: supplemental.revenue / 1e9,
+          method: "sec_8k_exhibit_99_3"
+        });
+
+        supplementalSource = supplemental.source;
+      }
+    } catch (e) {
+      supplementalError = e.message;
+    }
+  }
+
+  quarters = quarters
+    .sort((a, b) => a.end.localeCompare(b.end))
+    .slice(-5);
 
   const latest = quarters[quarters.length - 1];
   const today = new Date().toISOString().slice(0, 10);
@@ -501,7 +694,8 @@ function latestFiveRevenue(facts) {
       quarters: [],
       growth: null,
       status: "stale_revenue_data",
-      latestAvailableQuarter: latest?.end || null
+      latestAvailableQuarter: latest?.end || null,
+      supplementalError
     };
   }
 
@@ -509,12 +703,11 @@ function latestFiveRevenue(facts) {
     tag: f.tag,
     quarters,
     growth: weightedGrowth(quarters),
-    status: quarters.length === 5
-      ? "ok"
-      : "insufficient_quarters"
+    status: quarters.length === 5 ? "ok" : "insufficient_quarters",
+    supplementalSource,
+    supplementalError
   };
 }
-
 function balanceSheet(facts) {
   const cash = extractInstant(facts, CASH_TAGS, null, 180);
   const asOf = cash?.end || null;
@@ -898,7 +1091,7 @@ async function handle(request, env) {
         }, 200, origin);
       }
 
-      const revenueData = latestFiveRevenue(facts);
+      const revenueData = await latestFiveRevenue(facts, symbol, env);
 
       if (path === "/api/revenue") {
         return respond({
@@ -963,7 +1156,7 @@ async function handle(request, env) {
 
           try {
             const facts = await fetchSecFacts(company.cik, env);
-            const revenueData = latestFiveRevenue(facts);
+            const revenueData = await latestFiveRevenue(facts, symbol, env);
             const bs = balanceSheet(facts);
             const shares = shareCount(facts);
 

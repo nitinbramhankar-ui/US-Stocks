@@ -1,0 +1,9 @@
+name = "us-stocks"
+main = "worker/worker.js"
+compatibility_date = "2026-11-24"
+workers_dev = true
+keep_vars = true
+
+# The Worker is deployed from this repository's Cloudflare Workers Build.
+# Do not add FINNHUB_API_KEY or SEC_USER_AGENT values here.
+# Keep them as encrypted Worker secrets in Cloudflare.
